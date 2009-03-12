@@ -270,6 +270,7 @@ class Provider(object):
                 tags = data['tags'],
             )
 
+        #log.debug( "Created item for instance %s: %s" % (model_instance,item ) )
         return item
 
     def post_handle_item(self, item_instance, model_instance, data, created):
@@ -481,7 +482,7 @@ def active_providers():
             mod = __import__(provider, '', '', [ Provider.PROVIDERS[provider] ], -1)
             provider_cls = getattr(mod,Provider.PROVIDERS[provider])
         except ImportError, e:
-            log.error("Couldn't import provider %r: %s" % (p, e))
+            log.error("Couldn't import provider %r: %s" % (provider, e))
             raise
         if provider_cls().enabled():
             providers[provider] = provider_cls

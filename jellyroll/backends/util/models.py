@@ -16,5 +16,8 @@ class ContentLink(models.Model):
     url = models.URLField()
     identifier = models.CharField(max_length=128)
 
+    class Meta:
+        app_label = 'jellyroll'
+
     def __unicode__(self):
         return self.identifier

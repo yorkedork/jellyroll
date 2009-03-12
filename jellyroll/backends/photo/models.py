@@ -47,6 +47,7 @@ class Photoset(models.Model):
     def __unicode__(self):
         return self.title
 
+Item.objects.follow_model(Photoset)
 
 class Photo(models.Model):
     """

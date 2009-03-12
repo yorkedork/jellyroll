@@ -1,92 +1,109 @@
-import md5
 import datetime
 import logging
+log = logging.getLogger("jellyroll.providers.twitter")
 import dateutil
+import md5
 import re
+
+from httplib2 import HttpLib2Error
 from django.conf import settings
 from django.db import transaction
 from django.template.defaultfilters import slugify
 from django.utils.functional import memoize
 from django.utils.http import urlquote
 from django.utils.encoding import smart_str, smart_unicode
-from httplib2 import HttpLib2Error
-from jellyroll.providers import utils
-from jellyroll.models import Item, Message, ContentLink
 
-
-#
-# API URLs
-#
+from jellyroll.backends.item.models import Item
+from jellyroll.backends.message.models import Message
+from jellyroll.backends.util.models import ContentLink
+from jellyroll.providers import register_provider, utils, StructuredDataProvider
 
 RECENT_STATUSES_URL = "http://twitter.com/statuses/user_timeline/%s.rss"
 USER_URL = "http://twitter.com/%s"
+USER_LINK_TPL = "<a href='%s' title='%s'>%s</a>"
+TAG_RE = re.compile(r'(?P<tag>\#\w+)')
+USER_RE = re.compile(r'(?P<username>@\w+)')
+RT_RE = re.compile(r'RT\s+(?P<username>@\w+)')
+USERNAME_RE = re.compile(r'^%s:'%settings.TWITTER_USERNAME)
+URL_RE = re.compile( # modified from django.forms.fields.url_re
+    r'https?://'
+    r'(?:(?:[A-Z0-9-]+\.)+[A-Z]{2,6}|'
+    r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'
+    r'(?::\d+)?'
+    r'(?:/\S+|/?)', re.IGNORECASE)
 
-#
-# Public API
-#
 
-log = logging.getLogger("jellyroll.providers.twitter")
+class TwitterProvider(StructuredDataProvider):
+    """
 
-def enabled():
-    return True
 
-def update():
-    last_update_date = Item.objects.get_last_update_of_model(Message)
-    log.debug("Last update date: %s", last_update_date)
-    
-    xml = utils.getxml(RECENT_STATUSES_URL % settings.TWITTER_USERNAME)
-    for status in xml.getiterator("item"):
-        message      = status.find('title')
-        message_text = smart_unicode(message.text)
-        url          = smart_unicode(status.find('link').text)
+    """
+    def __init__(self):
+        super(TwitterProvider,self).__init__()
 
-        # pubDate delivered as UTC
-        timestamp    = dateutil.parser.parse(status.find('pubDate').text)
-        if utils.JELLYROLL_ADJUST_DATETIME:
-            timestamp = utils.utc_to_local_datetime(timestamp)
+        self.register_model(Message)
+        self.register_data_url(Message,RECENT_STATUSES_URL%settings.TWITTER_USERNAME,"xml")
 
-        if not _status_exists(message_text, url, timestamp):
-            _handle_status(message_text, url, timestamp)
+    def enabled(self):
+        ok = hasattr(settings, 'TWITTER_USERNAME')
+        if not ok:
+            log.warn('The Twitter provider is not available because the TWITTER_USERNAME is not set')
+        return ok
 
-#
-# GLOBAL CLUTTER
-#
+    def source_id(self, model_cls, extra):
+        return md5.new(smart_str(extra['message']) + \
+                       smart_str(extra['url']) + \
+                       str(extra['timestamp'])).hexdigest()
 
-TWITTER_TRANSFORM_MSG = False
-TWITTER_RETWEET_TXT = "Forwarding from %s: "
-try:
-    TWITTER_TRANSFORM_MSG = settings.TWITTER_TRANSFORM_MSG
-    TWITTER_RETWEET_TXT = settings.TWITTER_RETWEET_TXT
-except AttributeError:
-    pass
+    def update_message(self, data_iterator_func):
+        last_update_date = Item.objects.get_last_update_of_model(Message)
+        log.debug("Last update date: %s", last_update_date)
 
-if TWITTER_TRANSFORM_MSG:
-    USER_LINK_TPL = "<a href='%s' title='%s'>%s</a>"
-    TAG_RE = re.compile(r'(?P<tag>\#\w+)')
-    USER_RE = re.compile(r'(?P<username>@\w+)')
-    RT_RE = re.compile(r'RT\s+(?P<username>@\w+)')
-    USERNAME_RE = re.compile(r'^%s:'%settings.TWITTER_USERNAME)
+        statuses = self.incoming['message'] = list()
+        for status in data_iterator_func("item"):
 
-    # modified from django.forms.fields.url_re
-    URL_RE = re.compile(
-        r'https?://'
-        r'(?:(?:[A-Z0-9-]+\.)+[A-Z]{2,6}|'
-        r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})'
-        r'(?::\d+)?'
-        r'(?:/\S+|/?)', re.IGNORECASE)
+            message = smart_unicode(status.find("title").text)
+            timestamp = dateutil.parser.parse(status.find('pubDate').text)
+            if utils.JELLYROLL_ADJUST_DATETIME:
+                timestamp = utils.utc_to_local_datetime(timestamp)
 
-    def _transform_retweet(matchobj):
+            obj = {}
+            obj['message'], obj['links'], obj['tags'] = self.parse_message(message)
+            obj['timestamp']                          = timestamp
+            obj['url']                                = smart_unicode(status.find("link").text)
+
+            statuses.append( obj )
+
+    def post_handle_item_created(self, item_instance, model_instance, data):
+        if 'links' not in data:
+            return
+        for link in data['links']:
+            l = ContentLink(
+                url = link,
+                identifier = link,
+                )
+            l.save()
+            model_instance.links.add(l)
+
+    #
+    # Private API
+    #
+    def transform_retweet(self, matchobj):
+        TWITTER_RETWEET_TXT = "Forwarding from %s: "
+        if hasattr(settings,'TWITTER_RETWEET_TXT'):
+            TWITTER_RETWEET_TXT = settings.TWITTER_RETWEET_TXT
+
         if '%s' in TWITTER_RETWEET_TXT:
             return TWITTER_RETWEET_TXT % matchobj.group('username')
         return TWITTER_RETWEET_TXT
 
-    def _transform_user_ref_to_link(matchobj):
+    def transform_user_ref_to_link(self, matchobj):
         user = matchobj.group('username')[1:]
         link = USER_URL % user
         return USER_LINK_TPL % \
             (link,user,''.join(['@',user]))
 
-    def _parse_message(message_text):
+    def parse_message(self, message_text):
         """
         Parse out some semantics for teh lulz.
         
@@ -109,60 +126,19 @@ if TWITTER_TRANSFORM_MSG:
         # remove leading username
         message_text = USERNAME_RE.sub('',message_text)
         # check for RT-type retweet syntax
-        message_text = RT_RE.sub(_transform_retweet,message_text)
+        message_text = RT_RE.sub(self.transform_retweet,message_text)
         # replace @user references with links to their timeline
-        message_text = USER_RE.sub(_transform_user_ref_to_link,message_text)
+        message_text = USER_RE.sub(self.transform_user_ref_to_link,message_text)
         # extract defacto #tag style tweet tags
         tags = ' '.join( [tag[1:] for tag in TAG_RE.findall(message_text)] )
         message_text = TAG_RE.sub('',message_text)
 
         return (message_text.strip(),links,tags)
 
-    log.info("Enabling message transforms")
-else:
-    _parse_message = lambda msg: (msg,list(),"")
-    log.info("Disabling message transforms")
+    if not hasattr(settings,'TWITTER_TRANSFORM_MSG') or \
+       not settings.TWITTER_TRANSFORM_MSG:
 
-#
-# Private API
-#
+        log.info("Disabling message transforms")
+        TwitterProvider.parse_message = lambda self, msg: ( msg, list(), "" )
 
-@transaction.commit_on_success
-def _handle_status(message_text, url, timestamp):
-    message_text, links, tags = _parse_message(message_text)
-
-    t = Message(
-        message = message_text,
-        )
-
-    if not _status_exists(message_text, url, timestamp):
-        log.debug("Saving message: %r", message_text)
-        item = Item.objects.create_or_update(
-            instance = t,
-            timestamp = timestamp,
-            source = __name__,
-            source_id = _source_id(message_text, url, timestamp),
-            url = url,
-            tags = tags,
-            )
-        item.save()
-
-        for link in links:
-            l = ContentLink(
-                url = link,
-                identifier = link,
-                )
-            l.save()
-            t.links.add(l)
-
-def _source_id(message_text, url, timestamp):
-    return md5.new(smart_str(message_text) + smart_str(url) + str(timestamp)).hexdigest()
-    
-def _status_exists(message_text, url, timestamp):
-    id = _source_id(message_text, url, timestamp)
-    try:
-        Item.objects.get(source=__name__, source_id=id)
-    except Item.DoesNotExist:
-        return False
-    else:
-        return True
+register_provider( TwitterProvider )

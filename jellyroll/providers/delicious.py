@@ -1,17 +1,18 @@
-import time
 import dateutil.parser
 import dateutil.tz
 import logging
+log = logging.getLogger("jellyroll.providers.delicious")
 import urllib
+import time
+
 from django.conf import settings
 from django.db import transaction
 from django.utils.encoding import smart_unicode
-from jellyroll.models import Item, Bookmark
-from jellyroll.providers import utils
+from jellyroll.backends.bookmark.models import Bookmark
+from jellyroll.backends.item.models import Item
+from jellyroll.providers import utils, register_provider, StructuredDataProvider
 
-#
-# Super-mini Delicious API
-#
+
 class DeliciousClient(object):
     """
     A super-minimal delicious client :)
@@ -28,75 +29,75 @@ class DeliciousClient(object):
         
     def __repr__(self):
         return "<DeliciousClient: %s>" % self.method
-        
+
     def __call__(self, **params):
-        # Enforce Yahoo's "no calls quicker than every 1 second" rule
-        delta = time.time() - DeliciousClient.lastcall
-        if delta < 2:
-            time.sleep(2 - delta)
-        DeliciousClient.lastcall = time.time()
-        url = ("https://api.del.icio.us/%s?" % self.method) + urllib.urlencode(params)        
-        return utils.getxml(url, username=self.username, password=self.password)
+        url = ("https://api.del.icio.us/%s?" % self.method) + urllib.urlencode(params)
+        ctr = 0
 
-#
-# Public API
-#
+        # HACK: try three times before giving up :/
+        while True:
+            try:
+                # Enforce Yahoo's "no calls quicker than every 1 second" rule
+                delta = time.time() - DeliciousClient.lastcall
+                if delta < 2:
+                    time.sleep(2 - delta)
+                return utils.getxml(url, username=self.username, password=self.password)
+            except Exception, e:
+                if ctr+1 < 3:
+                    log.debug("Fetching %s failed. Retrying" % url)
+                    ctr += 1
+                else:
+                    raise e
+            finally:
+                DeliciousClient.lastcall = time.time()
 
-log = logging.getLogger("jellyroll.providers.delicious")
+class DeliciousProvider(StructuredDataProvider):
+    def __init__(self):
+        super(DeliciousProvider,self).__init__()
 
-def enabled():
-    ok = hasattr(settings, 'DELICIOUS_USERNAME') and hasattr(settings, 'DELICIOUS_PASSWORD')
-    if not ok:
-        log.warn('The Delicious provider is not available because the '
-                 'DELICIOUS_USERNAME and/or DELICIOUS_PASSWORD settings are '
-                 'undefined.')
-    return ok
-    
-def update():
-    delicious = DeliciousClient(settings.DELICIOUS_USERNAME, settings.DELICIOUS_PASSWORD)
+        self.register_model(Bookmark)
+        self.register_custom_data_interface(DeliciousClient,Bookmark)
 
-    # Check to see if we need an update
-    last_update_date = Item.objects.get_last_update_of_model(Bookmark)
-    last_post_date = utils.parsedate(delicious.posts.update().get("time"))
-    if last_post_date <= last_update_date:
-        log.info("Skipping update: last update date: %s; last post date: %s", last_update_date, last_post_date)
-        return
+    def enabled(self):
+        ok = hasattr(settings, 'DELICIOUS_USERNAME') and hasattr(settings, 'DELICIOUS_PASSWORD')
+        if not ok:
+            log.warn('The Delicious provider is not available because the '
+                     'DELICIOUS_USERNAME and/or DELICIOUS_PASSWORD settings are '
+                     'undefined.')
+        return ok
 
-    for datenode in reversed(list(delicious.posts.dates().getiterator('date'))):
-        dt = utils.parsedate(datenode.get("date"))
-        if dt > last_update_date:
-            _update_bookmarks_from_date(delicious, dt)
-                
-#
-# Private API
-#
+    def source_id(self, model_cls, extra):
+        return extra['hash']
 
-def _update_bookmarks_from_date(delicious, dt):
-    log.debug("Reading bookmarks from %s", dt)
-    xml = delicious.posts.get(dt=dt.strftime("%Y-%m-%d"))
-    for post in xml.getiterator('post'):
-        info = dict((k, smart_unicode(post.get(k))) for k in post.keys())
-        log.debug("Handling bookmark of %r", info["href"])
-        _handle_bookmark(info)
-_update_bookmarks_from_date = transaction.commit_on_success(_update_bookmarks_from_date)
+    def get_default_fields(self, model_cls):
+        fields = super(DeliciousProvider,self).get_default_fields(model_cls)
+        return [ field for field in fields if field.name != 'thumbnail' and field.name != 'thumbnail_url' ]
 
-def _handle_bookmark(info):
-    b, created = Bookmark.objects.get_or_create(
-        url         = info['href'],
-        defaults = dict(
-            description = info['description'],
-            extended    = info.get('extended', ''),
-        )
-    )
-    if not created:
-        b.description = info['description']
-        b.extended = info.get('extended', '')
-        b.save()
-    return Item.objects.create_or_update(
-        instance = b, 
-        timestamp = utils.parsedate(info['time']), 
-        tags = info.get('tag', ''),
-        source = __name__,
-        source_id = info['hash'],
-    )
+    def get_custom_data_interface_instance(self, interface_cls):
+        return interface_cls(settings.DELICIOUS_USERNAME,settings.DELICIOUS_PASSWORD)
 
+    def update_bookmark(self, delicious):
+        last_update_date = Item.objects.get_last_update_of_model(Bookmark)
+        bookmarks = self.incoming['bookmark'] = list()
+
+        last_post_date = utils.parsedate(delicious.posts.update().get("time"))
+        if last_post_date <= last_update_date:
+            log.info("Skipping update: last update date: %s; last post date: %s", last_update_date, last_post_date)
+            return
+
+        for datenode in reversed(list(delicious.posts.dates().getiterator('date'))):
+            dt = utils.parsedate(datenode.get("date"))
+            if dt > last_update_date:
+                log.debug("Reading bookmarks from %s", dt)
+                xml = delicious.posts.get(dt=dt.strftime("%Y-%m-%d"))
+                for post in xml.getiterator('post'):
+                    info = dict((k, smart_unicode(post.get(k))) for k in post.keys())
+                    log.debug("Handling bookmark of %r", info["href"])
+
+                    info['tags'] = info['tag']
+                    info['url'] = info['href']
+                    info['timestamp'] = utils.parsedate(info['time'])
+
+                    bookmarks.append( info )
+
+register_provider( DeliciousProvider )

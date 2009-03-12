@@ -1,22 +1,20 @@
 import datetime
 import logging
+log = logging.getLogger("jellyroll.providers.flickr")
 import urllib
+
 from django.conf import settings
 from django.db import transaction
 from django.utils.encoding import smart_unicode
-from jellyroll.models import Item, Photo
-from jellyroll.providers import utils
+from jellyroll.backends.item.models import Item
+from jellyroll.backends.photo.models import Photo, Photoset
+from jellyroll.providers import utils, register_provider, StructuredDataProvider
 
 try:
     set
 except NameError:
     from sets import Set as set     # Python 2.3 fallback
 
-log = logging.getLogger("jellyroll.providers.flickr")
-
-#
-# Mini FlickrClient API
-#
 
 class FlickrError(Exception):
     def __init__(self, code, message):
@@ -46,112 +44,154 @@ class FlickrClient(object):
             raise FlickrError(json["code"], json["message"])
         return json
 
-#
-# Public API
-#
-def enabled():
-    ok = (hasattr(settings, "FLICKR_API_KEY") and
-          hasattr(settings, "FLICKR_USER_ID") and
-          hasattr(settings, "FLICKR_USERNAME"))
-    if not ok:
-      log.warn('The Flickr provider is not available because the '
-               'FLICKR_API_KEY, FLICKR_USER_ID, and/or FLICKR_USERNAME settings '
-               'are undefined.')
-    return ok
+class FlickrProvider(StructuredDataProvider):
+    def __init__(self):
+        super(FlickrProvider,self).__init__()
 
-def update():
-    flickr = FlickrClient(settings.FLICKR_API_KEY)
-    
-    # Preload the list of licenses
-    licenses = licenses = flickr.photos.licenses.getInfo()
-    licenses = dict((l["id"], smart_unicode(l["url"])) for l in licenses["licenses"]["license"])
-    
-    # Handle update by pages until we see photos we've already handled
-    last_update_date = Item.objects.get_last_update_of_model(Photo)
-    page = 1
-    while True:
-        log.debug("Fetching page %s of photos", page)
-        resp = flickr.people.getPublicPhotos(user_id=settings.FLICKR_USER_ID, extras="license,date_taken", per_page="500", page=str(page))
-        photos = resp["photos"]
-        if page > photos["pages"]:
-            log.debug("Ran out of photos; stopping.")
-            break
-            
-        for photodict in photos["photo"]:
-            timestamp = utils.parsedate(str(photodict["datetaken"]))
-            if timestamp < last_update_date:
-                log.debug("Hit an old photo (taken %s; last update was %s); stopping.", timestamp, last_update_date)
+        self.register_model(Photo,priority=0)
+        self.register_model(Photoset,priority=1)
+
+        data_interface = FlickrClient(settings.FLICKR_API_KEY)
+        self.register_custom_data_interface(data_interface,Photo)
+        self.register_custom_data_interface(data_interface,Photoset)
+
+    def enabled(self):
+        ok = (hasattr(settings, "FLICKR_API_KEY") and
+              hasattr(settings, "FLICKR_USER_ID") and
+              hasattr(settings, "FLICKR_USERNAME"))
+        if not ok:
+            log.warn('The Flickr provider is not available because the '
+                     'FLICKR_API_KEY, FLICKR_USER_ID, and/or FLICKR_USERNAME settings '
+                     'are undefined.')
+        return ok
+
+    def source_id(self, model_cls, extra):
+        return ''
+
+    def convert_exif(self, exif):
+        converted = {}
+        for e in exif["photo"]["exif"]:
+            key = smart_unicode(e["label"])
+            val = e.get("clean", e["raw"])["_content"]
+            val = smart_unicode(val)
+            converted[key] = val
+        return converted
+
+    def convert_tags(self, tags):
+        return " ".join(set(t["_content"] for t in tags["tag"] if not t["machine_tag"]))
+
+    def get_default_fields(self, model_cls):
+        if model_cls == Photo:
+            fields = super(FlickrProvider,self).get_default_fields(model_cls)
+            return [ field for field in fields if field.name != '_exif' ]
+        elif model_cls == Photoset:
+            return super(FlickrProvider,self).get_default_fields(model_cls)
+
+    def update_photo(self, flickr):
+        last_update_date = Item.objects.get_last_update_of_model(Photo)
+        log.debug("Last update date: %s", last_update_date)
+
+        licenses = licenses = flickr.photos.licenses.getInfo()
+        licenses = dict((l["id"], smart_unicode(l["url"])) for l in licenses["licenses"]["license"])
+
+        page = 1
+        photo_list = self.incoming["photo"] = list()
+        while True:
+            log.debug("Fetching page %s of photos", page)
+            resp = flickr.people.getPublicPhotos(user_id=settings.FLICKR_USER_ID, extras="license,date_taken", 
+                                                 per_page="500", page=str(page))
+            photos = resp["photos"]
+            if page > photos["pages"]:
+                log.debug("Ran out of photos; stopping.")
                 break
-            
-            photo_id = utils.safeint(photodict["id"])
-            license = licenses[photodict["license"]]
-            secret = smart_unicode(photodict["secret"])
-            _handle_photo(flickr, photo_id, secret, license, timestamp)
-            
-        page += 1
-        
-#
-# Private API
-#
 
-def _handle_photo(flickr, photo_id, secret, license, timestamp):
-    info = flickr.photos.getInfo(photo_id=photo_id, secret=secret)["photo"]
-    server_id = utils.safeint(info["server"])
-    farm_id = utils.safeint(info["farm"])
-    taken_by = smart_unicode(info["owner"]["username"])
-    title = smart_unicode(info["title"]["_content"])
-    description = smart_unicode(info["description"]["_content"])
-    comment_count = utils.safeint(info["comments"]["_content"])
-    date_uploaded = datetime.datetime.fromtimestamp(utils.safeint(info["dates"]["posted"]))
-    date_updated = datetime.datetime.fromtimestamp(utils.safeint(info["dates"]["lastupdate"]))
-    
-    log.debug("Handling photo: %r (taken %s)" % (title, timestamp))
-    photo, created = Photo.objects.get_or_create(
-        photo_id      = str(photo_id),
-        defaults = dict(
-            server_id     = server_id,
-            farm_id       = farm_id,
-            secret        = secret,
-            taken_by      = taken_by,
-            cc_license    = license,
-            title         = title,
-            description   = description,
-            comment_count = comment_count,
-            date_uploaded = date_uploaded,
-            date_updated  = date_updated,
-        )
-    )
-    if created:
-        photo.exif = _convert_exif(flickr.photos.getExif(photo_id=photo_id, secret=secret))
-    else:
-        photo.server_id     = server_id
-        photo.farm_id       = farm_id
-        photo.secret        = secret
-        photo.taken_by      = taken_by
-        photo.cc_license    = license
-        photo.title         = title
-        photo.description   = description
-        photo.comment_count = comment_count
-        photo.date_uploaded = date_uploaded
-        photo.date_updated  = date_updated
-    photo.save()
-    
-    return Item.objects.create_or_update(
-        instance = photo, 
-        timestamp = timestamp,
-        tags = _convert_tags(info["tags"]),
-        source = __name__,
-    )
-_handle_photo = transaction.commit_on_success(_handle_photo)
+            for photodict in photos["photo"]:
+                timestamp = utils.parsedate(str(photodict["datetaken"]))
+                if timestamp < last_update_date:
+                    log.debug("Hit an old photo (taken %s; last update was %s); stopping.", 
+                              timestamp, last_update_date)
+                    break
 
-def _convert_exif(exif):
-    converted = {}
-    for e in exif["photo"]["exif"]:
-        key = smart_unicode(e["label"])
-        val = e.get("clean", e["raw"])["_content"]
-        val = smart_unicode(val)
-        converted[key] = val
-    return converted
+                obj = {}
+                obj['photo_id'] = utils.safeint(photodict["id"])
+                obj['cc_license'] = licenses[photodict["license"]]
+                obj['secret'] = smart_unicode(photodict["secret"])
 
-def _convert_tags(tags):
-    return " ".join(set(t["_content"] for t in tags["tag"] if not t["machine_tag"]))
+                info = flickr.photos.getInfo(photo_id=obj['photo_id'], secret=obj['secret'])["photo"]
+
+                obj['server_id'] = utils.safeint(info["server"])
+                obj['farm_id'] = utils.safeint(info["farm"])
+                obj['taken_by'] = smart_unicode(info["owner"]["username"])
+                obj['title'] = smart_unicode(info["title"]["_content"])
+                obj['description'] = smart_unicode(info["description"]["_content"])
+                obj['comment_count'] = utils.safeint(info["comments"]["_content"])
+                obj['date_uploaded'] = datetime.datetime.fromtimestamp(utils.safeint(info["dates"]["posted"]))
+                obj['date_updated'] = datetime.datetime.fromtimestamp(utils.safeint(info["dates"]["lastupdate"]))
+
+                obj['tags'] = self.convert_tags(info["tags"])
+                obj['timestamp'] = timestamp
+                obj['photoset'] = None
+
+                photo_list.append( obj )
+            page += 1
+
+    def update_photoset(self, flickr):
+        resp = flickr.people.getInfo(user_id=settings.FLICKR_USER_ID)
+        person = resp["person"]
+        base_url = smart_unicode(person["photosurl"]["_content"])
+
+        resp = flickr.photosets.getList(user_id=settings.FLICKR_USER_ID)
+        sets = resp["photosets"]
+        photoset_list = self.incoming["photoset"] = list()
+        for photosetdict in sets["photoset"]:
+
+            obj = {}
+            obj['photoset_id'] = photosetdict["id"]
+            obj['timestamp'] = datetime.datetime.now()
+            obj['url'] = "%s/sets/%s/" % (base_url, obj['photoset_id'])
+            obj['secret'] = smart_unicode(photosetdict["secret"])
+            obj['server_id'] = utils.safeint(photosetdict["server"])
+            obj['farm_id'] = utils.safeint(photosetdict["farm"])
+            obj['title'] = smart_unicode(photosetdict["title"]["_content"])
+            obj['description'] = smart_unicode(photosetdict["description"]["_content"])
+
+            photoset_list.append( obj )
+
+    #def pre_handle_item(self, model_instance, data):
+    #    super(FlickrProvider,self).pre_handle_item(model_instance,data)
+    #    if model_instance.__class__ == Photo:
+    #        data['url'] = model_instance.url
+
+    def pre_handle_item_created(self, model_instance, data):
+        if model_instance.__class__ == Photo:
+            data_interface = self.DATA_INTERFACES['photo']
+            model_instance.exif= self.convert_exif(
+                data_interface.photos.getExif(
+                    photo_id=data['photo_id'], secret=data['secret']))
+            model_instance.save()
+
+    def post_handle_item(self, item_instance, model_instance, data):
+        if model_instance.__class__ == Photoset:
+            data_interface = self.DATA_INTERFACES['photoset']
+            page = 1
+            while True:
+                resp = data_interface.photosets.getPhotos(
+                    user_id=settings.FLICKR_USER_ID, photoset_id=model_instance.photoset_id,
+                    extras="license,date_taken",  per_page="500", page=str(page), media="photos")
+                photos = resp["photoset"]
+                if page > photos["pages"]:
+                    log.debug("Ran out of photos; stopping.")
+                    break
+
+                for photodict in photos["photo"]:
+                    try:
+                        photo = Photo.objects.get(photo_id=photodict["id"])
+                        if not photo.photoset:
+                            photo.photoset = model_instance
+                        photo.save()
+                    except Photo.DoesNotExist:
+                        pass
+
+                page += 1
+
+register_provider( FlickrProvider )

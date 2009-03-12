@@ -1,72 +1,55 @@
 import datetime
+import dateutil
 import logging
-import feedparser
+log = logging.getLogger("jellyroll.providers.youtube")
+import md5
+
 from django.conf import settings
 from django.db import transaction
 from django.utils.encoding import smart_unicode, smart_str
-from jellyroll.models import Item, VideoSource, Video
-from jellyroll.providers import utils
 
-TAG_SCHEME = 'http://gdata.youtube.com/schemas/2007/keywords.cat'
-FEED_URL = 'http://gdata.youtube.com/feeds/api/users/%s/favorites?v=2&start-index=%s&max-results=%s'
+from jellyroll.backends.item.models import Item
+from jellyroll.backends.video.models import VideoSource, Video
+from jellyroll.providers import utils, register_provider, gdata, GDataProvider
 
-log = logging.getLogger("jellyroll.providers.youtube")
+import gdata.youtube
+import gdata.youtube.service
 
-#
-# Public API
-#
-def enabled():
-    ok = hasattr(settings, "YOUTUBE_USERNAME")
-    if not ok:
-        log.warn('The Youtube provider is not available because the '
-                 'YOUTUBE_USERNAME settings is undefined undefined.')
-    return ok
 
-def update():    
-    start_index = 1
-    max_results = 50
-    while True:
-        log.debug("Fetching videos %s - %s" % (start_index, start_index+max_results-1))
-        feed = feedparser.parse(FEED_URL % (settings.YOUTUBE_USERNAME, start_index, max_results))
-        for entry in feed.entries:            
-            if 'link' in entry:
-                url = entry.link
-            elif 'yt_videoid' in entry:
-                url = 'http://www.youtube.com/watch?v=%s' % entry.yt_videoid
-            else:
-                log.error("Video '%s' appears to have no link" % (entry.tite))
-                continue
-                
-            _handle_video(
-                title = entry.title, 
-                url = url,
-                tags = " ".join(t['term'] for t in entry.tags if t['scheme'] == TAG_SCHEME),
-                timestamp = datetime.datetime(*entry.published_parsed[:6]),
-            )
-        if len(feed.entries) < max_results:
-            log.debug("Ran out of results; finishing.")
-            break
-            
-        start_index += max_results
-#
-# Private API
-#
+class YoutubeProvider(GDataProvider):
+    """
 
-@transaction.commit_on_success
-def _handle_video(title, url, tags, timestamp):
-    log.debug("Handling video: %s" % smart_str(title))
-    source = VideoSource.objects.get(name="YouTube")
-    vid, created = Video.objects.get_or_create(
-        url = url, 
-        defaults = {
-            'title': smart_unicode(title), 
-            'source': source
-        }
-    )
-    if created:
-        return Item.objects.create_or_update(
-            instance = vid, 
-            timestamp = timestamp,
-            tags = tags,
-            source = __name__,
-        )
+
+    """
+    def __init__(self):
+        super(YoutubeProvider,self).__init__()
+
+        self.register_model(Video)
+        self.register_service_client(gdata.youtube.service.YouTubeService,Video)
+        self.source = VideoSource.objects.get(name="YouTube")
+
+    def source_id(self, model_cls, extra):
+        return md5.new( smart_str(extra['url']) ).hexdigest()
+
+    def update_video(self, client):
+        video_list = self.incoming["video"] = list()
+        feed = client.GetUserFavoritesFeed()
+        for entry in feed.entry:
+            obj = {}
+
+            obj['url'] = entry.link[0].href
+            obj['title'] = smart_unicode(entry.title.text)
+
+            tags = list()
+            # HACK: avoid the last category which appears to
+            #       simply be a link to the schema for video objects?
+            for category in entry.category[:-1]:
+                tags.append( category.term )
+            obj['tags'] = ' '.join( tags )
+
+            obj['timestamp'] = dateutil.parser.parse(entry.published.text)
+            obj['source'] = self.source
+
+            video_list.append( obj )
+
+register_provider( YoutubeProvider )

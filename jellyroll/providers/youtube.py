@@ -6,6 +6,7 @@ import md5
 
 from django.conf import settings
 from django.db import transaction
+from django.utils.encoding import DjangoUnicodeDecodeError
 from django.utils.encoding import smart_unicode, smart_str
 
 from jellyroll.backends.item.models import Item
@@ -38,7 +39,11 @@ class YoutubeProvider(GDataProvider):
             obj = {}
 
             obj['url'] = entry.link[0].href
-            obj['title'] = smart_unicode(entry.title.text)
+
+            try:
+                obj['title'] = smart_unicode(entry.title.text)
+            except DjangoUnicodeDecodeError:
+                return
 
             tags = list()
             # HACK: avoid the last category which appears to

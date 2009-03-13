@@ -2,6 +2,7 @@ import datetime
 import logging
 log = logging.getLogger("jellyroll.providers.flickr")
 import urllib
+import md5
 
 from django.conf import settings
 from django.db import transaction
@@ -66,7 +67,10 @@ class FlickrProvider(StructuredDataProvider):
         return ok
 
     def source_id(self, model_cls, extra):
-        return ''
+        if model_cls == Photo:
+            return ':'.join( ['flickr',extra['photo_id']] )
+        elif model_cls == Photoset:
+            return ':'.join( ['flickr',extra['photoset_id']] )
 
     def convert_exif(self, exif):
         converted = {}
@@ -95,6 +99,7 @@ class FlickrProvider(StructuredDataProvider):
         licenses = dict((l["id"], smart_unicode(l["url"])) for l in licenses["licenses"]["license"])
 
         page = 1
+        keep_working = True
         photo_list = self.incoming["photo"] = list()
         while True:
             log.debug("Fetching page %s of photos", page)
@@ -103,7 +108,7 @@ class FlickrProvider(StructuredDataProvider):
             photos = resp["photos"]
             if page > photos["pages"]:
                 log.debug("Ran out of photos; stopping.")
-                break
+                return
 
             for photodict in photos["photo"]:
                 timestamp = utils.parsedate(str(photodict["datetaken"]))
@@ -170,7 +175,7 @@ class FlickrProvider(StructuredDataProvider):
                     photo_id=data['photo_id'], secret=data['secret']))
             model_instance.save()
 
-    def post_handle_item(self, item_instance, model_instance, data):
+    def post_handle_item(self, item_instance, model_instance, data, created):
         if model_instance.__class__ == Photoset:
             data_interface = self.DATA_INTERFACES['photoset']
             page = 1
@@ -180,8 +185,7 @@ class FlickrProvider(StructuredDataProvider):
                     extras="license,date_taken",  per_page="500", page=str(page), media="photos")
                 photos = resp["photoset"]
                 if page > photos["pages"]:
-                    log.debug("Ran out of photos; stopping.")
-                    break
+                    return
 
                 for photodict in photos["photo"]:
                     try:

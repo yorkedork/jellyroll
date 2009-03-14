@@ -11,8 +11,8 @@ from django.utils.functional import memoize
 from django.utils.http import urlquote
 from django.utils.encoding import smart_str, smart_unicode
 
-from jellyroll.backends.item.models import Item
-from jellyroll.backends.track.models import Track
+from jellyroll.core.models import Item
+from jellyroll.contrib.track.models import Track
 from jellyroll.providers import utils, register_provider, StructuredDataProvider
 
 RECENT_TRACKS_URL = "http://ws.audioscrobbler.com/1.0/user/%s/recenttracks.xml?limit=100"
@@ -25,6 +25,10 @@ class LastfmProvider(StructuredDataProvider):
     
 
     """
+    MODELS = [
+        'track.Track',
+        ]
+
     def __init__(self):
         super(LastfmProvider,self).__init__()
 

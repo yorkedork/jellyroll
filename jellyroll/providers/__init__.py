@@ -1,24 +1,15 @@
-import os
-import glob
+import feedparser
 import logging
 log = logging.getLogger("jellyroll.provider")
-import feedparser
-import datetime
-import logging
 import urllib
+import logging
 
 from django.conf import settings
 from django.db import transaction
 from django.utils.encoding import smart_unicode, smart_str
 
-from jellyroll.backends.item.models import Item
-from jellyroll.backends.code.models import CodeCommit, CodeRepository
+from jellyroll.core.models import Item
 from jellyroll.providers import utils
-
-try:
-    set
-except NameError:
-    from sets import Set as set     # Python 2.3 fallback
 
 
 class ProviderException(Exception): 
@@ -29,29 +20,92 @@ class ProviderException(Exception):
     """
     pass
 
+# class ProviderBase(type):
+#     """
+#     Metaclasses are evil and error-prone; ``ProviderBase`` is essentially 
+#     cribbed from ``django.db.models.base.ModelBase`` to provide a similar
+#     ``Meta`` class functionality.
+
+#     """
+#     def __new__(cls, name, bases, attrs):
+#         super_new = super(ProviderBase, cls).__new__
+#         parents = [b for b in bases if isinstance(b, ProviderBase)]
+#         if not parents:
+#             return super_new(cls, name, bases, attrs)
+
+#         module = attrs.pop('__module__')
+#         new_class = super_new(cls, name, bases, {'__module__': module})
+#         attr_meta = attrs.pop('Meta', None)
+#         setattr(new_class,'_meta',attr_meta or object())
+
 class Provider(object):
     """ 
     The base class for the Jellyroll Provider subsystem.
 
+    A provider object has primarily two tasks:
+
+    * ``update_somemodel``: default and provider subclass-defined methods
+      to take data that has been fetched and process it into a list
+      of data objects of type 'somemodel' containing relevant information.
+    * ``handle_somemodel``: default and provider subclass-defined methods
+      to take processed data objects and create instance of the 
+      associated model objects of type 'somemodel'.
+    * ``handle_item``: by default a method which creates a shadow 
+      object (an ``Item`` instance) for model instance created in
+      the ``handle_somemethod`` method.
+      
+    To be clear, backend modules define various models which may be
+    processed in one of two[1_] different ways by the ``Provider`` 
+    object subsystem.
+
+    1. A model is not registered with the ``Item`` manager and is not 
+       registered with any provider. In this case all management of
+       these models is accomplished by code paths external to the
+       basic ``Provider`` subsystem.
+    2. A model is both registered with the ``Item`` manager and is
+       also registered with a given provider. In this case, both
+       a model instance and an shadow ``Item`` instance will be
+       created by default.
+
+    .. _1:
+
+    1. While an argument can be made that there should be a third option -
+       namely, that a model be registered with a provider but not with the
+      ``Item`` manager - in practice, it is far easier to handle this
+      behaviour by utilizing the *_update_* and *_handle_* hooks provided
+      by ``Provider``. See also, ``GoogleSearchProvider``.
+
+      In this case, a ``WebSearchResult`` isn't truly a "first-class" ``Item``
+      object, in the sense that we aren't interested in such objects in their
+      own right as they rely on ``WebSearch`` for context. Indeed, given a 
+      ``WebSearch`` object, it is trivial to retrieve the bound ``WebSearchResult``
+      instances programatically, as well as in a template.
+
+      By contrast, ``FlickrProvider`` has distinct data resources for both
+      ``Photo`` and ``Photoset`` objects; although their relationship is analagous
+      to ``WebSearch`` and ``WebSearchResult``, there is a much more palpable 
+      argument to be made in treating both ``Photo`` and ``Photoset`` objects
+      as first-class ``Item``s.
+
+      In summary, this seems like a rather simple guiding principle; moreover,
+      decoupling data model and item creation is catering to the exception and
+      not the common case, and is best (and most simply) left to custom handling
+      in the derived class(es).
+
     """
+    #__metaclass__ = ProviderBase
     PROVIDERS = {}
+    MODELS = []
 
     def __init__(self):
         self.registered_classes = {}
+        self.exclude_item_classes = list()
         self.handler_funcs = {}
         self.updater_funcs = {}
         self.call_queue = {}
         self.incoming = {}
 
     # Abstract methods
-    def enabled(self):
-        """
-        This method is a guard that determines whether or not this provider runs
-        when jellyroll management commands are run.
-
-        """
-        raise NotImplementedError()
-
     def source_id(self, model_cls, extra):
         """
         This method is optionally used in the base ``handle_item`` method by
@@ -83,6 +137,14 @@ class Provider(object):
         raise NotImplementedError()
 
     # Core methods
+    def enabled(self):
+        """
+        This method is a guard that determines whether or not this provider runs
+        when jellyroll management commands are run.
+
+        """
+        pass
+
     def register_model(self, model_cls, priority=0):
         """
         Registers a ``Provider`` instance with a particular model.
@@ -94,14 +156,14 @@ class Provider(object):
         self.registered_classes[model_str] = model_cls
         self.call_queue[model_str] = priority
 
+        self.updater_funcs[ model_str ] = \
+            getattr(self,'_'.join(['update',model_str]))
+
         try:
             self.handler_funcs[ model_str ] = \
                 getattr(self,'_'.join(['handle',model_str]))
         except AttributeError:
-            self.handler_funcs[ model_str ] = self.handle_default
-
-        self.updater_funcs[ model_str ] = \
-            getattr(self,'_'.join(['update',model_str]))
+            pass
 
     def get_default_fields(self, model_cls):
         """
@@ -135,7 +197,6 @@ class Provider(object):
             update_queue.sort( cmp=lambda x,y: cmp(self.call_queue[x],self.call_queue[y]) )
 
         for model_str in update_queue:
-            #func = transaction.commit_on_success(self.updater_funcs[model_str])
             func = self.updater_funcs[model_str]
             func( self.get_update_data(self.registered_classes[model_str],model_str) )
 
@@ -150,56 +211,90 @@ class Provider(object):
             handle_queue.sort( cmp=lambda x,y: cmp(self.call_queue[x],self.call_queue[y]) )
 
         for model_str in handle_queue:
-            func = transaction.commit_on_success(self.handler_funcs[model_str])
-            cls = self.registered_classes[model_str]
-            for element in self.incoming[model_str]:
+
+            def default_func(model_str, model_cls, data):
                 try:
-                    func( element, cls )
+                    func = self.handler_funcs[model_str]
+                except KeyError:
+                    func = self.handle_default
+
+                self.pre_handle_default(model_str,model_cls,data)
+                (model_instance,created) = func(model_str, model_cls,data)
+                self.post_handle_default(model_instance,model_str,model_cls,data,created)
+
+                return (model_instance,created)
+            default_func = transaction.commit_on_success( default_func )
+
+            for data in self.incoming[model_str]:
+                try:
+                    model_cls = self.registered_classes[model_str]
+                    (model_instance,created) = default_func( model_str, model_cls, data )
+                    self.pre_handle_item( model_instance, data, created )
+                    item_instance = self.handle_item( model_instance, data, created )
+                    self.post_handle_item( item_instance, model_instance, data, created )
                 except Exception, e:
                     log.error( "Encountered exception while processing for %s for %s: %s" % \
-                                   (element,model_str,str(e)))
+                                   (data,model_str,str(e)))
 
-    def handle_default(self, obj, cls):
+    def pre_handle_default(self, model_str, model_cls, data):
+        """
+        This method is called prior to ``handle_default``, or ``handle_somemodel`` if it is defined,
+        with the current model being processed, ``model_cls`` and the data object produced in the
+        ``update_somemodel`` method.
+
+        """
+        pass
+
+    def post_handle_default(self, model_instance, model_str, model_cls, data, created):
+        """
+        This method is called subsequent to ``handle_default``, or ``handle_somemodel`` if it is defined,
+        with the current model being processed, ``model_cls``, its recently created instance, ``model_instance``,
+        the data object produced in the ``update_somemodel`` method and a boolean value signifying whether or
+        not ``model_instance`` has just been created.
+
+        """
+        pass
+
+    def handle_default(self, model_str, model_cls, data):
         """
         This method is a fallback implementation of the ``handle_<model>`` method.
 
-        This method assumes that ``cls`` is a subclass of ``django.db.models.Model``.
+        This method assumes that ``model_cls`` is a subclass of ``django.db.models.Model``.
 
         """
         # TODO: add exception handling if we encounter something that isn't derived 
         #       from django.db.models.Model so that users will find it easier to 
         #       avoid ignorance.
         defaults = {}
-        primary_key = cls()._meta.pk.name
+        primary_key = model_cls()._meta.pk.name
 
-        for field in iter( self.get_default_fields(cls) ):
-            defaults[field.name] = obj[field.name]
+        for field in iter( self.get_default_fields(model_cls) ):
+            defaults[field.name] = data[field.name]
 
-        _obj, created = (None, False)
-        if primary_key in obj:
-            _obj, created = cls.objects.get_or_create(
-                pk = obj[primary_key],
+        obj, created = (None, False)
+        if primary_key in data:
+            obj, created = model_cls.objects.get_or_create(
+                pk = data[primary_key],
                 defaults = defaults
             )
         else:
             try:
-                _obj = Item.objects.find(self,cls,obj).object
+                item = Item.objects.find(self,model_cls,data)
+                obj = item.object
             except Item.DoesNotExist:
+                obj = model_cls()
                 created = True
-                _obj = cls()
             except NotImplementedError:
                 log.error("Neither the primary key for %s nor the method source_id for %s were "
                           "found. Processing with the default implementation of the method "
                           "handle_default cannot continue. Please implement either of these two "
-                          "options to enable processing %s." % (cls,self.__class__,cls))
+                          "options to enable processing %s." % (model_cls,self.__class__,model_cls))
                 return
 
-        for field in iter( self.get_default_fields(cls) ):
-            setattr(_obj,field.name,defaults[field.name])
+        for field in iter( self.get_default_fields(model_cls) ):
+            setattr(obj,field.name,defaults[field.name])
 
-        self.pre_handle_item( _obj, obj, created )
-        item = self.handle_item( _obj, obj, created )
-        self.post_handle_item( item, _obj, obj, created )
+        return (obj,created)
 
     def pre_handle_item(self, model_instance, data, created):
         """
@@ -270,7 +365,6 @@ class Provider(object):
                 tags = data['tags'],
             )
 
-        #log.debug( "Created item for instance %s: %s" % (model_instance,item ) )
         return item
 
     def post_handle_item(self, item_instance, model_instance, data, created):
@@ -424,36 +518,6 @@ class GDataProvider(Provider):
         client.ClientLogin(settings.GOOGLE_USERNAME,settings.GOOGLE_PASSWORD)
         return client
 
-class CodeRepositoryProvider(Provider):
-    """
-    ``Provider`` subclass that has baked-in processing facilities for 
-    fetching updates from SCM systems via ``CodeRepository`` objects.
-
-    """
-    def __init__(self):
-        super(CodeRepositoryProvider,self).__init__()
-        self.register_model(CodeCommit)
-
-    def source_id(self, model_cls, extra):
-        return "%s:r%s" % (smart_str(extra['repository'].url),
-                          smart_str(extra['revision']))
-
-    def get_last_updated(self, model_cls, **kwargs):
-        return Item.objects.get_last_update_of_model(
-            model_cls, source_id__startswith=kwargs['repository'].url)
-
-    def get_update_data(self, model_cls, model_str):
-        return CodeRepository.objects.filter(type=self.REPOSITORY_TYPE)
-
-    def update_codecommit(self, repositories):
-        self.incoming["codecommit"] = list()
-        for repository in repositories:
-            last_update_date = self.get_last_updated(CodeCommit,repository=repository)
-            log.info("Updating changes from %s since %s", repository.url, last_update_date)
-
-            func = getattr(self,'_'.join([ 'update_codecommit',self.REPOSITORY_TYPE ]))
-            func(repository,last_update_date,self.incoming["codecommit"])
-
 #
 # Module Functions
 #
@@ -469,54 +533,3 @@ def register_provider(provider_cls):
         )
     if provider_cls not in Provider.PROVIDERS:
         Provider.PROVIDERS[app] = provider
-
-def active_providers():
-    """
-    Return a dict of {name: module} of active, enabled providers.
-
-    """
-    providers = {}
-    for provider in settings.JELLYROLL_PROVIDERS:
-        try:
-            mod = __import__(provider, '', '', [], -1)
-            mod = __import__(provider, '', '', [ Provider.PROVIDERS[provider] ], -1)
-            provider_cls = getattr(mod,Provider.PROVIDERS[provider])
-        except ImportError, e:
-            log.error("Couldn't import provider %r: %s" % (provider, e))
-            raise
-        if provider_cls().enabled():
-            providers[provider] = provider_cls
-
-    return providers
-
-def update(providers):
-    """
-    Update a given set of providers. If the list is empty, it means update all
-    of 'em.
-
-    """
-    active = active_providers()
-    if providers is None:
-        providers = active.keys()
-    else:
-        providers = set(active.keys()).intersection(providers)
-        
-    for provider in providers:
-        log.debug("Updating from provider %r", provider)
-        try:
-            provider_cls = active[provider]
-        except KeyError:
-            log.error("Unknown provider: %r" % provider)
-            continue
-
-        log.info("Running '%s.update()'", provider)
-        try:
-            provider_cls().run_update()
-        except (KeyboardInterrupt, SystemExit):
-            raise
-        except Exception, e:
-            log.error("Failed during '%s.update()'", provider)
-            log.exception(e)
-            continue
-
-        log.info("Done with provider %r", provider)

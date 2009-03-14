@@ -9,8 +9,8 @@ from django.db import transaction
 from django.utils.encoding import DjangoUnicodeDecodeError
 from django.utils.encoding import smart_unicode, smart_str
 
-from jellyroll.backends.item.models import Item
-from jellyroll.backends.video.models import VideoSource, Video
+from jellyroll.core.models import Item
+from jellyroll.contrib.video.models import VideoSource, Video
 from jellyroll.providers import utils, register_provider, gdata, GDataProvider
 
 import gdata.youtube
@@ -22,6 +22,11 @@ class YoutubeProvider(GDataProvider):
 
 
     """
+    MODELS = [
+        'video.Video', 
+        'video.VideoSource',
+        ]
+
     def __init__(self):
         super(YoutubeProvider,self).__init__()
 

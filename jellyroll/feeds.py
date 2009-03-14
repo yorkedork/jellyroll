@@ -1,1 +1,1 @@
-from jellyroll.backends.item.feeds import *
+from jellyroll.core.feeds import *

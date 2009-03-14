@@ -14,7 +14,7 @@ import datetime
 from django.core import urlresolvers
 from django.template import loader, RequestContext
 from django.http import Http404, HttpResponse
-from jellyroll.backends.item.models import Item
+from jellyroll.core.models import Item
 
 def today(request, **kwargs):
     """

@@ -8,8 +8,9 @@ import time
 from django.conf import settings
 from django.db import transaction
 from django.utils.encoding import smart_unicode
-from jellyroll.backends.bookmark.models import Bookmark
-from jellyroll.backends.item.models import Item
+
+from jellyroll.core.models import Item
+from jellyroll.contrib.bookmark.models import Bookmark
 from jellyroll.providers import utils, register_provider, StructuredDataProvider
 
 
@@ -52,6 +53,10 @@ class DeliciousClient(object):
                 DeliciousClient.lastcall = time.time()
 
 class DeliciousProvider(StructuredDataProvider):
+    MODELS = [
+        'bookmark.Bookmark'
+        ]
+
     def __init__(self):
         super(DeliciousProvider,self).__init__()
 

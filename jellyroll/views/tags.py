@@ -8,7 +8,7 @@ from django.contrib.contenttypes.models import ContentType
 from django.views.generic.list_detail import object_list
 from django.template import RequestContext
 from django.http import Http404
-from jellyroll.backends.item.models import Item
+from jellyroll.core.models import Item
 from tagging.models import TaggedItem, Tag
 
 

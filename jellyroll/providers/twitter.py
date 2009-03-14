@@ -13,9 +13,9 @@ from django.utils.functional import memoize
 from django.utils.http import urlquote
 from django.utils.encoding import smart_str, smart_unicode
 
-from jellyroll.backends.item.models import Item
-from jellyroll.backends.message.models import Message
-from jellyroll.backends.util.models import ContentLink
+from jellyroll.core.models import Item
+from jellyroll.contrib.message.models import Message
+from jellyroll.contrib.utils.models import ContentLink
 from jellyroll.providers import register_provider, utils, StructuredDataProvider
 
 RECENT_STATUSES_URL = "http://twitter.com/statuses/user_timeline/%s.rss"
@@ -38,6 +38,11 @@ class TwitterProvider(StructuredDataProvider):
 
 
     """
+    MODELS = [
+        'message.Message',
+        'util.ContentLink',
+        ]
+
     def __init__(self):
         super(TwitterProvider,self).__init__()
 
@@ -74,9 +79,10 @@ class TwitterProvider(StructuredDataProvider):
 
             statuses.append( obj )
 
-    def post_handle_item_created(self, item_instance, model_instance, data):
-        if 'links' not in data:
+    def post_handle_default(self, item_instance, model_str, model_instance, data, created):
+        if not created or 'links' not in data:
             return
+
         for link in data['links']:
             l = ContentLink(
                 url = link,

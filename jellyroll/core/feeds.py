@@ -2,7 +2,7 @@ from django.contrib.syndication.feeds import Feed
 from django.utils.feedgenerator import Atom1Feed
 from django.contrib.sites.models import Site
 
-from jellyroll.models import Item
+from jellyroll.core.models import Item
 
 
 class JellyrollBaseFeed(Feed):

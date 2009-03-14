@@ -1,7 +1,9 @@
 import logging
 import optparse
-import jellyroll.providers
+import jellyroll
+
 from django.core.management.base import BaseCommand
+
 
 class Command(BaseCommand):
     option_list = BaseCommand.option_list + (
@@ -37,10 +39,10 @@ class Command(BaseCommand):
                     self.print_providers()
                     return 0
 
-        jellyroll.providers.update(options['providers'])
+        jellyroll.update(options['providers'])
 
     def available_providers(self):
-        return jellyroll.providers.active_providers()
+        return jellyroll.active_providers()
 
     def print_providers(self):
         available = sorted(self.available_providers().keys())

@@ -7,9 +7,10 @@ import md5
 from django.db import transaction
 from django.utils.encoding import smart_unicode, smart_str
 
-from jellyroll.models import Item
-from jellyroll.backends.code.models import CodeRepository, CodeCommit
-from jellyroll.providers import utils, register_provider, CodeRepositoryProvider
+from jellyroll.core.models import Item
+from jellyroll.contrib.code.models import CodeRepository, CodeCommit
+from jellyroll.contrib.code.providers import CodeRepositoryProvider
+from jellyroll.providers import utils, register_provider
 
 try:
     import pysvn

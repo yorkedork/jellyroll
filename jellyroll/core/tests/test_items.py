@@ -4,7 +4,8 @@ from django.test import TestCase
 from django.conf import settings
 from django import template
 
-from jellyroll.backends.models import *
+#from jellyroll.backends.models import *
+from backends.models import *
 from tagging.models import Tag
 
 # shortcut

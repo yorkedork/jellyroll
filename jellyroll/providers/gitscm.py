@@ -10,9 +10,10 @@ from unipath import FSPath as Path
 from django.db import transaction
 from django.utils.encoding import smart_unicode
 
-from jellyroll.backends.item.models import Item
-from jellyroll.backends.code.models import CodeRepository, CodeCommit
-from jellyroll.providers import utils, register_provider, CodeRepositoryProvider
+from jellyroll.core.models import Item
+from jellyroll.contrib.code.models import CodeRepository, CodeCommit
+from jellyroll.contrib.code.providers import CodeRepositoryProvider
+from jellyroll.providers import utils, register_provider
 
 try:
     import git
@@ -63,9 +64,11 @@ class GitSCMProvider(CodeRepositoryProvider):
 
                 # stored as UTC
                 timestamp = datetime.datetime.fromtimestamp(time.mktime(commit.committed_date))
+                print "GMT timestamp: ", timestamp
                 if utils.JELLYROLL_ADJUST_DATETIME:
-                    timestamp = utils.utc_to_local_timestamp(time.mktime(commit.committed_date))                    
-                    
+                    timestamp = utils.utc_to_local_timestruct(commit.committed_date)
+                    print "adjusting the timestamp: ", timestamp
+
                 obj = {}
                 obj['revision'] = commit.id
                 obj['repository'] = repository

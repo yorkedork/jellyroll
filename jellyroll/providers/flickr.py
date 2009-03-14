@@ -7,8 +7,9 @@ import md5
 from django.conf import settings
 from django.db import transaction
 from django.utils.encoding import smart_unicode
-from jellyroll.backends.item.models import Item
-from jellyroll.backends.photo.models import Photo, Photoset
+
+from jellyroll.core.models import Item
+from jellyroll.contrib.photo.models import Photo, Photoset
 from jellyroll.providers import utils, register_provider, StructuredDataProvider
 
 try:
@@ -46,6 +47,11 @@ class FlickrClient(object):
         return json
 
 class FlickrProvider(StructuredDataProvider):
+    MODELS = [
+        'photo.Photo',
+        'photo.Photoset',
+        ]
+
     def __init__(self):
         super(FlickrProvider,self).__init__()
 
@@ -118,7 +124,7 @@ class FlickrProvider(StructuredDataProvider):
                     break
 
                 obj = {}
-                obj['photo_id'] = utils.safeint(photodict["id"])
+                obj['photo_id'] = smart_unicode(photodict["id"])
                 obj['cc_license'] = licenses[photodict["license"]]
                 obj['secret'] = smart_unicode(photodict["secret"])
 
@@ -151,7 +157,7 @@ class FlickrProvider(StructuredDataProvider):
         for photosetdict in sets["photoset"]:
 
             obj = {}
-            obj['photoset_id'] = photosetdict["id"]
+            obj['photoset_id'] = smart_unicode(photosetdict["id"])
             obj['timestamp'] = datetime.datetime.now()
             obj['url'] = "%s/sets/%s/" % (base_url, obj['photoset_id'])
             obj['secret'] = smart_unicode(photosetdict["secret"])
@@ -162,20 +168,15 @@ class FlickrProvider(StructuredDataProvider):
 
             photoset_list.append( obj )
 
-    #def pre_handle_item(self, model_instance, data):
-    #    super(FlickrProvider,self).pre_handle_item(model_instance,data)
-    #    if model_instance.__class__ == Photo:
-    #        data['url'] = model_instance.url
-
     def pre_handle_item_created(self, model_instance, data):
         if model_instance.__class__ == Photo:
             data_interface = self.DATA_INTERFACES['photo']
-            model_instance.exif= self.convert_exif(
+            model_instance.exif = self.convert_exif(
                 data_interface.photos.getExif(
                     photo_id=data['photo_id'], secret=data['secret']))
             model_instance.save()
 
-    def post_handle_item(self, item_instance, model_instance, data, created):
+    def post_handle_default(self, model_instance, model_str, model_cls, data, created):
         if model_instance.__class__ == Photoset:
             data_interface = self.DATA_INTERFACES['photoset']
             page = 1
@@ -183,18 +184,18 @@ class FlickrProvider(StructuredDataProvider):
                 resp = data_interface.photosets.getPhotos(
                     user_id=settings.FLICKR_USER_ID, photoset_id=model_instance.photoset_id,
                     extras="license,date_taken",  per_page="500", page=str(page), media="photos")
+
                 photos = resp["photoset"]
                 if page > photos["pages"]:
                     return
 
                 for photodict in photos["photo"]:
                     try:
-                        photo = Photo.objects.get(photo_id=photodict["id"])
-                        if not photo.photoset:
-                            photo.photoset = model_instance
-                        photo.save()
+                        photo = Photo.objects.get(photo_id=smart_unicode(photodict["id"]))
+                        model_instance.photos.add(photo)
                     except Photo.DoesNotExist:
-                        pass
+                        log.debug( "Photo object corresponding to the record %s could not be found for photoset %s" % \
+                                       (photodict,model_instance) )
 
                 page += 1
 

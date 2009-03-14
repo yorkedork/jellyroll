@@ -90,8 +90,10 @@ if JELLYROLL_ADJUST_DATETIME:
         timestamp = datetime.datetime.fromtimestamp(ts,tz=orig_tz)
         return timestamp.astimezone(LOCAL)
 
-    def utc_to_local_timestruct(ts, orig_tz=UTC):
+    def utc_to_local_timestruct(ts):
         """
         Convert a timestruct object into a tz-aware datetime object.
         """
-        return utc_to_local_timestamp(time.mktime(ts),orig_tz)
+        fmt_str = "%Y-%m-%d %H:%M:%S"
+        time_str = time.strftime(" ".join([fmt_str,"+0000"]),ts)
+        return dateutil.parser.parse(time_str).astimezone(LOCAL)

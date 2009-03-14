@@ -8,7 +8,7 @@ from django.db import models
 from django.utils import simplejson, text
 from django.utils.encoding import smart_unicode
 
-from jellyroll.managers import ItemManager
+from jellyroll.core.managers import ItemManager
 from tagging.fields import TagField
 
 

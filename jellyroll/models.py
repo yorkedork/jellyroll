@@ -1,1 +1,1 @@
-from jellyroll.backends.item.models import *
+from jellyroll.core.models import Item

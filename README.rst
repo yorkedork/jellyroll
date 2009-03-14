@@ -26,6 +26,7 @@ Changes
 Recently, the provider and model/backend subsystem of this fork of jellyroll has been more or less refactored. 
 
 1. What you can do:
+
   * access the same old providers in ``jellyroll.providers``
   * signal providers to update via the same mechanism; in other words, the django management
     command ``jellyroll_update`` still works as it has.
@@ -36,6 +37,7 @@ Recently, the provider and model/backend subsystem of this fork of jellyroll has
   * You may specify "contrib" modules separately or you may install them all by using ``jellyroll.contrib``.
 
 2. What you can't do:
+
   * access any previous models (other than ``Item``) via ``jellyroll.models``. Models that
     are defined externally as using ``Item`` tracking, thusly, shouldn't be affected. The
     remaining models previously in ``jellyroll.models`` now exist in ``jellyroll.contrib.somecategory``.

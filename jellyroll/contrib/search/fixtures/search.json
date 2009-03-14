@@ -1,0 +1,11 @@
+[
+    {
+        "model" : "jellyroll.searchengine",
+        "pk" : "1",
+        "fields" : {
+            "name" : "Google",
+            "home" : "http://www.google.com/",
+            "search_template" : "http://www.google.com/search?q=%s"
+        }
+    }
+]

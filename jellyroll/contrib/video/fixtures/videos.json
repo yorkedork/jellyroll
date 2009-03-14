@@ -1,0 +1,20 @@
+[
+    {
+        "model" : "jellyroll.videosource",
+        "pk" : "1",
+        "fields" : {
+            "name" : "Google",
+            "home" : "http://video.google.com",
+            "embed_template" : "http://video.google.com/googleplayer.swf?docId=%s&hl=en"
+        }
+    },
+    {
+        "model" : "jellyroll.videosource",
+        "pk" : "2",
+        "fields" : {
+            "name" : "YouTube",
+            "home" : "http://www.youtube.com",
+            "embed_template" : "http://www.youtube.com/v/%s"
+        }
+    }
+]

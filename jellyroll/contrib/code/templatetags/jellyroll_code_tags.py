@@ -17,9 +17,9 @@ class CodeCommitsForRepositoryNode(template.Node):
     def render(self, context):
         try:
             repository = CodeRepository.objects.get(name=self.repository_name)
-            ct = ContentType.objects.get_for_model(CodeCommit)
-            codecommit_items = Item.objects.filter(content_type=ct).order_by("-timestamp")
-            codecommits = [ item.object for item in codecommit_items if item.object.repository == repository ]
+            items = Item.objects.get_for_model(CodeCommit).order_by("-timestamp")
+            codecommits = [ item for item in items if item.object.repository == repository ]
+
             if self.limit:
                 context[self.context_var] = codecommits[:self.limit]
             else:

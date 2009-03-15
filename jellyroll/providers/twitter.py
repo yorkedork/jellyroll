@@ -38,22 +38,13 @@ class TwitterProvider(StructuredDataProvider):
 
 
     """
-    MODELS = [
-        'message.Message',
-        'util.ContentLink',
-        ]
+    class Meta:
+        models   = ( Message, )
+        settings = ( 'TWITTER_USERNAME', )
 
     def __init__(self):
         super(TwitterProvider,self).__init__()
-
-        self.register_model(Message)
         self.register_data_url(Message,RECENT_STATUSES_URL%settings.TWITTER_USERNAME,"xml")
-
-    def enabled(self):
-        ok = hasattr(settings, 'TWITTER_USERNAME')
-        if not ok:
-            log.warn('The Twitter provider is not available because the TWITTER_USERNAME is not set')
-        return ok
 
     def source_id(self, model_cls, extra):
         return md5.new(smart_str(extra['message']) + \
@@ -79,10 +70,9 @@ class TwitterProvider(StructuredDataProvider):
 
             statuses.append( obj )
 
-    def post_handle_default(self, item_instance, model_str, model_instance, data, created):
+    def post_handle_item(self, item_instance, model_instance, data, created):
         if not created or 'links' not in data:
             return
-
         for link in data['links']:
             l = ContentLink(
                 url = link,
@@ -90,6 +80,7 @@ class TwitterProvider(StructuredDataProvider):
                 )
             l.save()
             model_instance.links.add(l)
+            #model_instance.save()
 
     #
     # Private API

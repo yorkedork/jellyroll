@@ -11,7 +11,7 @@ from django.utils.encoding import smart_unicode, smart_str
 
 from jellyroll.core.models import Item
 from jellyroll.contrib.video.models import VideoSource, Video
-from jellyroll.providers import utils, register_provider, gdata, GDataProvider
+from jellyroll.providers import utils, register_provider, GDataProvider
 
 import gdata.youtube
 import gdata.youtube.service
@@ -22,15 +22,11 @@ class YoutubeProvider(GDataProvider):
 
 
     """
-    MODELS = [
-        'video.Video', 
-        'video.VideoSource',
-        ]
+    class Meta:
+        models = (Video,)
 
     def __init__(self):
         super(YoutubeProvider,self).__init__()
-
-        self.register_model(Video)
         self.register_service_client(gdata.youtube.service.YouTubeService,Video)
         self.source = VideoSource.objects.get(name="YouTube")
 

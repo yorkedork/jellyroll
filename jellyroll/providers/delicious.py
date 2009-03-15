@@ -17,8 +17,8 @@ from jellyroll.providers import utils, register_provider, StructuredDataProvider
 class DeliciousClient(object):
     """
     A super-minimal delicious client :)
-    """
-    
+
+    """   
     lastcall = 0
     
     def __init__(self, username, password, method='v1'):
@@ -53,23 +53,17 @@ class DeliciousClient(object):
                 DeliciousClient.lastcall = time.time()
 
 class DeliciousProvider(StructuredDataProvider):
-    MODELS = [
-        'bookmark.Bookmark'
-        ]
+    """
+    
+
+    """
+    class Meta:
+        models   = (Bookmark,)
+        settings = ('DELICIOUS_USERNAME','DELICIOUS_PASSWORD')
 
     def __init__(self):
         super(DeliciousProvider,self).__init__()
-
-        self.register_model(Bookmark)
         self.register_custom_data_interface(DeliciousClient,Bookmark)
-
-    def enabled(self):
-        ok = hasattr(settings, 'DELICIOUS_USERNAME') and hasattr(settings, 'DELICIOUS_PASSWORD')
-        if not ok:
-            log.warn('The Delicious provider is not available because the '
-                     'DELICIOUS_USERNAME and/or DELICIOUS_PASSWORD settings are '
-                     'undefined.')
-        return ok
 
     def source_id(self, model_cls, extra):
         return extra['hash']
@@ -93,11 +87,9 @@ class DeliciousProvider(StructuredDataProvider):
         for datenode in reversed(list(delicious.posts.dates().getiterator('date'))):
             dt = utils.parsedate(datenode.get("date"))
             if dt > last_update_date:
-                log.debug("Reading bookmarks from %s", dt)
                 xml = delicious.posts.get(dt=dt.strftime("%Y-%m-%d"))
                 for post in xml.getiterator('post'):
                     info = dict((k, smart_unicode(post.get(k))) for k in post.keys())
-                    log.debug("Handling bookmark of %r", info["href"])
 
                     info['tags'] = info['tag']
                     info['url'] = info['href']

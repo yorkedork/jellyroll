@@ -17,13 +17,18 @@ class CodeRepositoryProvider(Provider):
     fetching updates from SCM systems via ``CodeRepository`` objects.
 
     """
-    MODELS = [
-        'code.CodeCommit',
-        ]
+    class Meta:
+        repository_type = None
+        models = (CodeCommit,)
 
     def __init__(self):
         super(CodeRepositoryProvider,self).__init__()
         self.register_model(CodeCommit)
+
+    def enabled(self):
+        if not self._meta.repository_type:
+            return False
+        return super(CodeRepositoryProvider,self).enabled()
 
     def source_id(self, model_cls, extra):
         return "%s:r%s" % (smart_str(extra['repository'].url),
@@ -34,7 +39,7 @@ class CodeRepositoryProvider(Provider):
             model_cls, source_id__startswith=kwargs['repository'].url)
 
     def get_update_data(self, model_cls, model_str):
-        return CodeRepository.objects.filter(type=self.REPOSITORY_TYPE)
+        return CodeRepository.objects.filter(type=self._meta.repository_type)
 
     def update_codecommit(self, repositories):
         self.incoming["codecommit"] = list()
@@ -42,6 +47,6 @@ class CodeRepositoryProvider(Provider):
             last_update_date = self.get_last_updated(CodeCommit,repository=repository)
             log.info("Updating changes from %s since %s", repository.url, last_update_date)
 
-            func = getattr(self,'_'.join([ 'update_codecommit',self.REPOSITORY_TYPE ]))
+            func = getattr(self,'_'.join([ 'update_codecommit',self._meta.repository_type ]))
             func(repository,last_update_date,self.incoming["codecommit"])
 

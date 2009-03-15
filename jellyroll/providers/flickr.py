@@ -47,30 +47,18 @@ class FlickrClient(object):
         return json
 
 class FlickrProvider(StructuredDataProvider):
-    MODELS = [
-        'photo.Photo',
-        'photo.Photoset',
-        ]
+    """
+
+    """
+    class Meta:
+        models   = (Photo,Photoset,)
+        settings = ('FLICKR_API_KEY','FLICKR_USER_ID',)
 
     def __init__(self):
         super(FlickrProvider,self).__init__()
-
-        self.register_model(Photo,priority=0)
-        self.register_model(Photoset,priority=1)
-
         data_interface = FlickrClient(settings.FLICKR_API_KEY)
         self.register_custom_data_interface(data_interface,Photo)
         self.register_custom_data_interface(data_interface,Photoset)
-
-    def enabled(self):
-        ok = (hasattr(settings, "FLICKR_API_KEY") and
-              hasattr(settings, "FLICKR_USER_ID") and
-              hasattr(settings, "FLICKR_USERNAME"))
-        if not ok:
-            log.warn('The Flickr provider is not available because the '
-                     'FLICKR_API_KEY, FLICKR_USER_ID, and/or FLICKR_USERNAME settings '
-                     'are undefined.')
-        return ok
 
     def source_id(self, model_cls, extra):
         if model_cls == Photo:

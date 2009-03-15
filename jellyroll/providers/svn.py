@@ -2,6 +2,7 @@ import time
 import logging
 log = logging.getLogger("jellyroll.providers.svn")
 import datetime
+import pysvn
 import md5
 
 from django.db import transaction
@@ -12,25 +13,15 @@ from jellyroll.contrib.code.models import CodeRepository, CodeCommit
 from jellyroll.contrib.code.providers import CodeRepositoryProvider
 from jellyroll.providers import utils, register_provider
 
-try:
-    import pysvn
-except ImportError:
-    pysvn = None
-
 
 class SubversionProvider(CodeRepositoryProvider):
     """
     
 
     """
-    REPOSITORY_TYPE = "svn"
-
-    def enabled(self):
-        ok = pysvn is not None
-        if not ok:
-            log.warn("The SVN provider is not available because the pysvn module "
-                     "isn't installed.")
-        return ok
+    class Meta(CodeRepositoryProvider):
+        repository_type = "svn"
+        modules = ('pysvn',)
 
     def update_codecommit_svn(self, repository, last_update_date, commit_list):
         # TODO: investigate issues with last_update_date, etc.

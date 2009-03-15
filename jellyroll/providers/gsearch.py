@@ -16,8 +16,8 @@ from django.utils.encoding import smart_unicode
 
 from jellyroll.core.models import Item
 from jellyroll.contrib.search.models import SearchEngine, WebSearch, WebSearchResult
-from jellyroll.providers import utils, register_provider, gdata 
 from jellyroll.providers import ProviderException, StructuredDataProvider
+from jellyroll.providers import utils, register_provider
 
 RSS_URL = "https://%s:%s@www.google.com/searchhistory/?output=rss"
 VIDEO_TAG_URL = "http://video.google.com/tags?docid=%s"
@@ -28,31 +28,17 @@ class GoogleSearchProvider(StructuredDataProvider):
 
     
     """
-    MODELS = [
-        'search.WebSearch',
-        'search.WebSearchResult',
-        'search.SearchEngine',
-        ]
+    class Meta:
+        models   = (WebSearch,)
+        settings = ('GOOGLE_USERNAME','GOOGLE_PASSWORD',)
 
     def __init__(self):
         super(GoogleSearchProvider,self).__init__()
-
-        self.search_engine = SearchEngine.objects.get(name="Google")
-        self.register_model(WebSearch, priority=0)
-
         feed_url = RSS_URL % (settings.GOOGLE_USERNAME,settings.GOOGLE_PASSWORD)
+        self.search_engine = SearchEngine.objects.get(name="Google")
         self.register_data_url(WebSearch,feed_url,'rss')
-
         self.websearch_results = list()
         
-    def enabled(self):
-        ok = hasattr(settings, 'GOOGLE_USERNAME') and hasattr(settings, 'GOOGLE_PASSWORD')
-        if not ok:
-            log.warn('The Google Search provider is not available because the '
-                     'GOOGLE_USERNAME and/or GOOGLE_PASSWORD settings are '
-                     'undefined.')
-        return ok
-
     def source_id(self, model_cls, extra):
         return ":".join( [extra['engine'].name,extra['query'],extra['guid']] ) 
 
@@ -76,7 +62,7 @@ class GoogleSearchProvider(StructuredDataProvider):
                 
                 self.websearch_results.append( obj )
 
-    def post_handle_default(self, model_instance, model_str, model_cls, data, created):
+    def post_handle_item(self, item_instance, model_instance, data, created):
         results = [ result for result in self.websearch_results if result['guid'] == data['guid'] ]
         for result_data in results:
             result,created = WebSearchResult.objects.get_or_create(

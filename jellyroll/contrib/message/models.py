@@ -1,14 +1,16 @@
+import md5
+
 from django.db import models
-from django.utils.encoding import smart_str
 from django.utils import text
+
 from jellyroll.core.models import Item
 from jellyroll.contrib.utils.models import ContentLink
-import md5
 
 
 class Message(models.Model):
     """
     A message, status update, or "tweet".
+
     """
     message = models.TextField()
     links = models.ManyToManyField(ContentLink,blank=True,null=True)

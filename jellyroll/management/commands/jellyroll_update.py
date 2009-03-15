@@ -8,13 +8,14 @@ from django.core.management.base import BaseCommand
 class Command(BaseCommand):
     option_list = BaseCommand.option_list + (
         optparse.make_option(
-            "-p", "--provider", 
+            "-p", "--providers", 
             dest="providers", 
             action="append", 
             help="Only use certain provider(s)."
         ),
         optparse.make_option(
             "-l", "--list-providers", 
+            dest="list_providers",
             action="store_true", 
             help="Display a list of active data providers."
         ),
@@ -28,10 +29,14 @@ class Command(BaseCommand):
             }[options.get('verbosity', '0')]
         logging.basicConfig(level=level, format="%(name)s: %(levelname)s: %(message)s")
 
+        if 'list_providers' not in options:
+            options['list_providers'] = False
+        if 'providers' not in options:
+            options['providers'] = self.available_providers()
+
         if options['list_providers']:
             self.print_providers()
             return 0
-
         if options['providers']:
             for provider in options['providers']:
                 if provider not in self.available_providers():

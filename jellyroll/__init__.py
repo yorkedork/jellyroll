@@ -7,7 +7,7 @@ import logging
 import urllib
 
 from django.conf import settings
-from jellyroll.providers import Provider
+from jellyroll.providers import get_registered_provider, _providers_cache
 
 try:
     set
@@ -28,13 +28,16 @@ def active_providers():
     for provider in settings.JELLYROLL_PROVIDERS:
         try:
             mod = __import__(provider, '', '', [], -1)
-            mod = __import__(provider, '', '', [ Provider.PROVIDERS[provider] ], -1)
-            provider_cls = getattr(mod,Provider.PROVIDERS[provider])
+            mod = __import__(provider, '', '', [ get_registered_provider(provider) ], -1)
+            provider_cls = getattr(mod, get_registered_provider(provider))
         except ImportError, e:
             log.error("Couldn't import provider %r: %s" % (provider, e))
             raise
+
         if provider_cls().enabled():
             providers[provider] = provider_cls
+        else:
+            log.debug( "Provider %s will not be enabled." % provider )
 
     return providers
 

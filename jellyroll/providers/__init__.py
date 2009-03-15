@@ -4,39 +4,60 @@ log = logging.getLogger("jellyroll.provider")
 import urllib
 import logging
 
+from django.utils.encoding import smart_unicode, smart_str
+from django.db.models.loading import get_model
 from django.conf import settings
 from django.db import transaction
-from django.utils.encoding import smart_unicode, smart_str
 
 from jellyroll.core.models import Item
 from jellyroll.providers import utils
 
 
-class ProviderException(Exception): 
+class Options(object):
+    def __init__(self, meta=None):
+        self.meta = meta
+        if not meta or not len(meta.__dict__):
+            return
+        for attr,val in meta.__dict__.iteritems():
+            if not attr.startswith('__'):
+                setattr(self,attr,val)
+
+    def contribute_to_class(self, cls):
+        cls._meta = self
+        if self.meta:
+            del self.meta
+
+class ProviderBase(type):
     """
-    The base class for all proccessing exceptions that occur
-    within the Provider code path.
+    Metaclasses are evil and error-prone; ``ProviderBase`` is essentially 
+    cribbed from ``django.db.models.base.ModelBase`` to provide a similar
+    ``Meta`` class functionality.
 
     """
+    def __new__(cls, name, bases, attrs):
+        super_new = super(ProviderBase, cls).__new__
+        parents = [b for b in bases if isinstance(b, ProviderBase)]
+        if not parents:
+            return super_new(cls, name, bases, attrs)
+
+        # build class object like we should
+        new_class = super_new(cls, name, bases, attrs)
+        attr_meta = attrs.pop('Meta', None)
+
+        # bind the Meta innerclass to _meta on the new class
+        options = Options(attr_meta)
+        options.contribute_to_class(cls)
+        setattr(new_class,'_meta',options)
+
+        return new_class
+
+
+
+class ProviderException(Exception):
     pass
 
-# class ProviderBase(type):
-#     """
-#     Metaclasses are evil and error-prone; ``ProviderBase`` is essentially 
-#     cribbed from ``django.db.models.base.ModelBase`` to provide a similar
-#     ``Meta`` class functionality.
-
-#     """
-#     def __new__(cls, name, bases, attrs):
-#         super_new = super(ProviderBase, cls).__new__
-#         parents = [b for b in bases if isinstance(b, ProviderBase)]
-#         if not parents:
-#             return super_new(cls, name, bases, attrs)
-
-#         module = attrs.pop('__module__')
-#         new_class = super_new(cls, name, bases, {'__module__': module})
-#         attr_meta = attrs.pop('Meta', None)
-#         setattr(new_class,'_meta',attr_meta or object())
+class ProviderNotEnabled(ProviderException):
+    pass
 
 class Provider(object):
     """ 
@@ -93,13 +114,10 @@ class Provider(object):
       in the derived class(es).
 
     """
-    #__metaclass__ = ProviderBase
-    PROVIDERS = {}
-    MODELS = []
+    __metaclass__ = ProviderBase
 
     def __init__(self):
         self.registered_classes = {}
-        self.exclude_item_classes = list()
         self.handler_funcs = {}
         self.updater_funcs = {}
         self.call_queue = {}
@@ -130,20 +148,62 @@ class Provider(object):
     def get_last_updated(self, model_cls, **kwargs):
         """
         This method should return a datetime object representing the date (and time) 
-        associated with the last item bound with the model instance given by 
-        ``model_cls`` created by this provider.
+        associated with the last item bound with the model given by ``model_cls``,
+        created by this provider.
 
         """
         raise NotImplementedError()
 
     # Core methods
+    def prepare(self):
+        """
+        
+
+        """
+        # register models on which this provider relies
+        model_list = list()
+        if hasattr(self._meta,'models'):
+            model_list = self._meta.models
+
+        for model in model_list:
+            self.register_model(model)
+
+        # check existence of required settings
+        setting_list = list()
+        if hasattr(self._meta,'settings'):
+            setting_list = self._meta.settings
+
+        for setting in setting_list:
+            try:
+                getattr(settings,setting)
+            except AttributeError, e:
+                log.error("Application setting %s is not set." % setting)
+                raise ProviderNotEnabled()
+
+        # check module dependencies
+        module_list = list()
+        if hasattr(self._meta,'modules'):
+            module_list = self._meta.modules
+
+        for module in module_list:
+            try:
+                __import__(module, '', '', [], -1)
+            except ImportError, e:
+                log.error("You have activated a provider which requires a module "
+                          "that is not currently installed")
+                raise ProviderNotEnabled()
+
     def enabled(self):
         """
         This method is a guard that determines whether or not this provider runs
         when jellyroll management commands are run.
 
         """
-        pass
+        try:
+            self.prepare()
+            return True
+        except ProviderNotEnabled:
+            return False
 
     def register_model(self, model_cls, priority=0):
         """
@@ -180,6 +240,8 @@ class Provider(object):
         This method is the public entry-point.
 
         """
+        self.prepare()
+
         self.update_main()
         self.handle_main()
 
@@ -235,6 +297,7 @@ class Provider(object):
                 except Exception, e:
                     log.error( "Encountered exception while processing for %s for %s: %s" % \
                                    (data,model_str,str(e)))
+                    
 
     def pre_handle_default(self, model_str, model_cls, data):
         """
@@ -484,29 +547,19 @@ class StructuredDataProvider(Provider):
                     processor(content[0])
                     )
 
-try:
-    import gdata
-except ImportError:
-    gdata = None
-
 class GDataProvider(Provider):
     """
     ``Provider`` subclass that has baked-in processing facilities for 
     fetching object data via Google's GData API.
 
     """
+    class Meta:
+        settings = ('GOOGLE_USERNAME','GOOGLE_PASSWORD')
+        modules  = ('gdata')
+
     def __init__(self):
         super(GDataProvider,self).__init__()
-
         self.DATA_INTERFACES = {}
-
-    def enabled(self):
-        ok = hasattr(settings, 'GOOGLE_USERNAME') and hasattr(settings, 'GOOGLE_PASSWORD') and gdata
-        if not ok:
-            log.warn('The GData provider is not available because the '
-                     'GOOGLE_USERNAME and/or GOOGLE_PASSWORD settings are '
-                     'undefined.')
-        return ok
 
     def register_service_client(self, interface_cls, model_cls):
         model_str = str(model_cls.__name__).lower()
@@ -521,15 +574,20 @@ class GDataProvider(Provider):
 #
 # Module Functions
 #
+_providers_cache = {}
 
 def register_provider(provider_cls):
     """
     Registers ``provider_cls`` with the provider subsystem.
 
     """
+    log.debug( "Registering %s" % provider_cls )
     (app, provider) = ( 
         provider_cls.__module__,
         provider_cls.__name__,
         )
-    if provider_cls not in Provider.PROVIDERS:
-        Provider.PROVIDERS[app] = provider
+    if provider_cls not in _providers_cache:
+        _providers_cache[app] = provider
+
+def get_registered_provider(app):
+    return _providers_cache.get(app, None)

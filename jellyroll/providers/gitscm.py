@@ -5,6 +5,7 @@ log = logging.getLogger("jellyroll.providers.gitscm")
 import datetime
 import shutil
 import tempfile
+import git
 
 from unipath import FSPath as Path
 from django.db import transaction
@@ -15,24 +16,15 @@ from jellyroll.contrib.code.models import CodeRepository, CodeCommit
 from jellyroll.contrib.code.providers import CodeRepositoryProvider
 from jellyroll.providers import utils, register_provider
 
-try:
-    import git
-except ImportError:
-    git = None
-
 
 class GitSCMProvider(CodeRepositoryProvider):
     """
 
-    """
-    REPOSITORY_TYPE = "git"
 
-    def enabled(self):
-        ok = git is not None
-        if not ok:
-            log.warn("The GIT provider is not available because the GitPython module "
-                     "isn't installed.")
-        return ok
+    """
+    class Meta(CodeRepositoryProvider.Meta):
+        repository_type = "git"
+        modules         = ('git',)
 
     def create_local_repo(self, repository):
         working_dir = tempfile.mkdtemp()
@@ -64,10 +56,8 @@ class GitSCMProvider(CodeRepositoryProvider):
 
                 # stored as UTC
                 timestamp = datetime.datetime.fromtimestamp(time.mktime(commit.committed_date))
-                print "GMT timestamp: ", timestamp
                 if utils.JELLYROLL_ADJUST_DATETIME:
                     timestamp = utils.utc_to_local_timestruct(commit.committed_date)
-                    print "adjusting the timestamp: ", timestamp
 
                 obj = {}
                 obj['revision'] = commit.id
